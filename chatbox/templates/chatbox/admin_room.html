@@ -1,0 +1,217 @@
+<!-- chat/templates/chat/room.html -->
+<!-- chat/templates/chat/room.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <style type="text/css">
+        body {
+  height: calc(100vh - 32px);
+  font-family: Roboto, sans-serif;
+  margin : 0px;
+  background-image: url('data:image/svg+xml,%3Csvg width="52" height="26" viewBox="0 0 52 26" xmlns="http://www.w3.org/2000/svg"%3E%3Cg fill="none" fill-rule="evenodd"%3E%3Cg fill="%239C92AC" fill-opacity="0.4"%3E%3Cpath d="M10 10c0-2.21-1.79-4-4-4-3.314 0-6-2.686-6-6h2c0 2.21 1.79 4 4 4 3.314 0 6 2.686 6 6 0 2.21 1.79 4 4 4 3.314 0 6 2.686 6 6 0 2.21 1.79 4 4 4v2c-3.314 0-6-2.686-6-6 0-2.21-1.79-4-4-4-3.314 0-6-2.686-6-6zm25.464-1.95l8.486 8.486-1.414 1.414-8.486-8.486 1.414-1.414z" /%3E%3C/g%3E%3C/g%3E%3C/svg%3E');
+}
+
+.main-card {
+  background:white;
+  color:white;
+  width: 80%;
+  height: calc(100% - 32px);
+  margin: 16px auto;
+  border-radius: 8px;
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+  display:flex;
+  flex-direction:column;
+  overflow: hidden;
+}
+
+.main-title {
+  background-color: rebeccapurple;
+  font-size: large;
+  font-weight: bold;
+  padding:32px;
+}
+.main-title svg{
+  height: 16px;
+   margin: 0px 8px
+}
+
+.chat-area {
+  flex-grow: 1;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+.input-message {
+  padding: 8px 24px;
+  flex-grow: 1;
+  margin: 0px 8px 0px 0px;
+  border-radius: 24px;
+  border: none;
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+}
+.input-message:focus{
+  outline :none;
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.3), 0 6px 20px 0 rgba(0, 0, 0, 0.25);
+}
+.input-div {
+  height: 48px;
+  width: calc(100% - 32px);
+  margin: 16px;
+  display: flex;
+}
+
+.input-send {
+  background :rebeccapurple;
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  border: none;
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+}
+.input-send:hover{
+  cursor:pointer;  
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.3), 0 6px 20px 0 rgba(0, 0, 0, 0.25);
+}
+.input-send svg{
+  fill:white;
+  margin:11px 8px;
+}
+.chat-message-div {
+  display: flex;
+}
+
+.chat-message {
+  background-color: white;
+  margin: 8px 16px;
+  padding: 16px 24px;
+  animation-name: fadeIn;
+  animation-iteration-count: 1;
+  animation-timing-function: ease-in;
+  animation-duration: 100ms;
+  box-shadow: 0 10px 16px 0 rgba(0, 0, 0, 0.1), 0 6px 20px 0 rgba(0, 0, 0, 0.11);
+  color:black;
+  border-radius: 50px;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1; 
+}
+ 
+::-webkit-scrollbar-thumb {
+  background: #888; 
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555; 
+}
+    </style>
+
+<script type="text/javascript">
+    var running = false
+    function send() {
+        if (running == true)
+            return
+        var msg = document.getElementById("message").value
+        if (msg == "")
+            return
+        running = true
+        addMsg(msg)
+        window.setTimeout(addResponseMsg, 1000, msg)
+    }
+    function addMsg(msg) {
+        var div = document.createElement("div");
+        div.innerHTML = "<span style='flex-grow:1'></span><div class='chat-message'>" + msg + "</div>"
+        div.className = "chat-message-div"
+        document.getElementById("message-box").appendChild(div)
+    }
+    function addResponseMsg(msg) {
+        var div = document.createElement("div");
+        div.innerHTML = "<div class='chat-message'>" + msg + "</div>"
+        div.className = "chat-message-div"
+        document.getElementById("message-box").appendChild(div)
+        running = false
+    }
+    document.getElementById("message").addEventListener("keyup", function (event) {
+        if (event.keyCode === 13) {
+            event.preventDefault();
+            send()
+        }
+    });
+</script>
+<script type="text/javascript" src="//code.jquery.com/jquery-2.1.4.min.js"></script>
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/socket.io/2.0.4/socket.io.slim.js"></script>  
+    <meta charset="utf-8"/>
+    <title>Chat Room</title>
+</head>
+
+<body>
+    {% if admin %}
+    <div class = "main-card">
+        <div class = "main-title"><svg viewBox="0 0 24 24">
+            <path fill="currentColor" d="M12,2A2,2 0 0,1 14,4C14,4.74 13.6,5.39 13,5.73V7H14A7,7 0 0,1 21,14H22A1,1 0 0,1 23,15V18A1,1 0 0,1 22,19H21V20A2,2 0 0,1 19,22H5A2,2 0 0,1 3,20V19H2A1,1 0 0,1 1,18V15A1,1 0 0,1 2,14H3A7,7 0 0,1 10,7H11V5.73C10.4,5.39 10,4.74 10,4A2,2 0 0,1 12,2M7.5,13A2.5,2.5 0 0,0 5,15.5A2.5,2.5 0 0,0 7.5,18A2.5,2.5 0 0,0 10,15.5A2.5,2.5 0 0,0 7.5,13M16.5,13A2.5,2.5 0 0,0 14,15.5A2.5,2.5 0 0,0 16.5,18A2.5,2.5 0 0,0 19,15.5A2.5,2.5 0 0,0 16.5,13Z" />
+
+        </svg>
+
+        <textarea id="chat-log" cols="100" rows="20"></textarea><br>
+        <input id="chat-message-input" type="text" size="100"><br>
+        <input id="chat-message-submit" type="button" value="Send">
+        {{ room_name|json_script:"room-name" }}
+        <script>
+            const roomName = JSON.parse(document.getElementById('room-name').textContent);
+
+            let namespace = '/admin';
+            var adminsocket = io.connect(namespace, {'sync disconnect on unload': true});
+            
+            adminsocket.on('connect', function() {
+                console.log('ok');
+                adminsocket.emit('enter_room', {room: roomName});
+            });
+
+            adminsocket.on('disconnect', function() {
+                console.error('Unexpected Disconnect!');
+            });
+
+            adminsocket.on('message', function(message) {
+              console.log('Received message!');
+              console.log(message.data);
+              console.log('Ends here');
+              document.querySelector('#chat-log').value += (message.data + '\n');
+            });
+
+            document.querySelector('#chat-message-input').focus();
+            document.querySelector('#chat-message-input').onkeyup = function(e) {
+                if (e.keyCode === 13) {  // enter, return
+                    document.querySelector('#chat-message-submit').click();
+                }
+            };
+
+            document.querySelector('#chat-message-submit').onclick = function(e) {
+                const messageInputDom = document.querySelector('#chat-message-input');
+                const message = messageInputDom.value;
+                if (adminsocket !== null) {
+                  adminsocket.emit('message', {data: message, room: roomName});
+                  messageInputDom.value = '';
+                }
+            };
+        </script>
+    </div>
+    
+    {% else %}
+    <h1>Sorry, this page is available for admins only</h1>
+    {% endif %}
+</body>
+</html>
