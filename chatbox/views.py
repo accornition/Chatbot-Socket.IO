@@ -36,6 +36,11 @@ msg_num = 0
 # The event object, which the background thread waits on. Update the DB when the event is set
 event = Event()
 
+# TODO: Cache the last N messages for instant display
+# The idea is to store it in the redis session, so that it loads the messages whenever the same
+# user comes to the same room
+last_N_messages = 4
+
 # Redis Server Options
 DOTENV_FILE = os.path.join(os.getcwd(), 'chatbox_socketio', '.env')
 env_config = Config(RepositoryEnv(DOTENV_FILE))
@@ -330,46 +335,87 @@ class AdminNamespace(socketio.Namespace):
 		The Admin LiveChat routes go here
 	"""
 	def on_connect(self, sid, environ):
-		global sid_to_room
+		global room_to_id
+		print(f"sid to room = {sid_to_room}")
+		get_room_mapping()
+		print(f"room_to_id = {room_to_id}")
 		print(f"Connected to Namespace admin!")
-		try:
-			room_name = message['room'].strip()
-			print(f"Room name {room_name}")
-			sid_to_room[sid] = room_name
-		except:
-			room_name = None
 
 	
 	def on_enter_room(self, sid, message):
-		global sid_to_room
+		global room_to_id
 		room_name = message['room'].strip()
-		sid_to_room[sid] = room_name
-		print(f"Entered room {room_name}")
-		self.enter_room(sid, room=room_name)
+		room_name = None if room_name not in room_to_id else room_name
+		if room_name is not None:
+			print(f"Entered room {room_name}")
+			self.enter_room(sid, room=room_name)
+			
+			with self.session(sid) as session:
+				session['room_name'] = room_name
+				session['room_id'] = room_to_id[room_name]
+				session['user'] = get_user()
+		else:
+			print(f"Room {message['room']} not found in the Database. Disconnecting...")
+			self.disconnect(sid)
 	
 
 	def on_exit_room(self, sid, message):
-		global sid_to_room
+		global room_to_id
 		room_name = message['data'].strip()
-		room_name = None if sid not in sid_to_room else sid_to_room[sid]
-		if room_name is not None:
+		room_id = None if room_name not in room_to_id else room_to_id[room_name]
+		if room_id is not None:
 			self.leave_room(sid, room=room_name)
-			del sid_to_room[sid]
 			print(f"Exited room {room_name}")
+		else:
+			print(f"Room {message['room']} not found in the Database. Disconnecting...")
+			self.disconnect(sid)
 	
 
 	def on_message(self, sid, message):
+		global room_to_id
+		global msg_num
+
 		room_name = message['room']
+
 		print(f"Sending {message}")
-		if sid not in sid_to_room:
+		if room_name not in room_to_id:
 			self.emit('message', {'data': message['data']}, room=sid)
 		else:
 			print(f"Emitting to room {room_name}")
 			self.emit('message', {'data': message['data']}, room=room_name)
 
+			msg_content = message['data']
+
+			with self.session(sid) as session:
+				room_id = session['room_id']
+				update_session_redis(room_name, msg_num + 1, {
+					'chat_room': room_name,
+					'user_name': str(session['user']),
+					'message': msg_content,
+					'msg_num': msg_num + 1,
+					'room_id': str(room_id),
+				})
+				msg_num += 1
+
 	def on_disconnect(self, sid):
 		print(f"Disconnecting from Namespace")
-		self.disconnect(sid)
+
+		try:
+			with self.session(sid) as session:
+				print(f"Updating DB for {session['room_id']}...")
+				# TODO: Update current state
+				with transaction.atomic():
+					# Update the current state in the database
+					obj = ChatRoom.objects.get(pk=session['room_id'])
+					obj.save()
+					# Now finally, update the session
+					update_session_db(session['room_name'])
+			print('Done!')
+			# Added call to self.disconnect()
+			self.disconnect(sid)
+			print(f"Disconnected successfully.")
+		except KeyError:
+			pass
 
 # Register the namespaces
 sio.register_namespace(TemplateNamespace('/chat'))
