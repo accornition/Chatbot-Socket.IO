@@ -28,6 +28,7 @@ num_users = 0
 threshold = 4
 
 sid_to_room = dict()
+room_to_id = dict()
 
 # TODO: Current Message Number. Must be read from somewhere in the future
 msg_num = 0
@@ -59,6 +60,16 @@ except UndefinedValueError:
     CHATBOX_DEMO_APPLICATION = False
 
 
+def get_room_mapping():
+	# Fetches the room_id -> room_name mapping from the Database
+	global room_to_id
+	# TODO: Avoid this stupid bulk query
+	for obj in ChatRoom.objects.all():
+		room_id, room_name = obj.uuid, obj.room_name
+		room_to_id[room_name] = room_id
+	print(f"After bulk query, mapping = {room_to_id}")
+
+
 def fetch_redis_batch(redis_iterable, batch_size):
     # Fetch all the keys and values in a batch
     keys = [iter(redis_iterable)] * batch_size
@@ -71,7 +82,6 @@ def get_last_state_from_redis(room_name):
 
 
 # Updates the database with the session data, from the stored cache in redis
-# TODO: Wrap around @database_sync_to_async and make this faster
 def update_session_db(room_name):
 	global redis_connection
 
@@ -88,8 +98,10 @@ def update_session_db(room_name):
 
 			print(f"Content: {content}")
 			
+			# Using a serializer here, as otherwise, getting the instance of
+			# ChatRoom and passing it to the ChatboxMsg instance is painful
 			serializer = ChatBoxMessageSerializer(data=content)
-
+			
 			try:
 				if serializer.is_valid():
 					with transaction.atomic():
@@ -140,12 +152,13 @@ def update_session_redis(room_name, msg_num, content):
 
 def create_room(user, content):
 	print(f"Creating room for user {user}")
-	serializer = ChatRoomSerializer(data=content)
+	#serializer = ChatRoomSerializer(data=content)
+	instance = ChatRoom(**content)
 	try:
-		if serializer.is_valid():
-			with transaction.atomic():
-				instance = serializer.save()
-				return instance.uuid
+		#if serializer.is_valid():
+		with transaction.atomic():
+			instance.save()
+			return instance.uuid
 	except IntegrityError:
 		print('Room already there in DB!')
 
@@ -156,31 +169,24 @@ class TemplateNamespace(socketio.Namespace):
 	"""
 	def on_connect(self, sid, environ):
 		global sid_to_room
+		global room_to_id
 		print(f"sid to room = {sid_to_room}")
+		get_room_mapping()
+		print(f"room_to_id = {room_to_id}")
 		print(f"Connected to Namespace template!")
 
 	
 	def on_enter_room(self, sid, message):
 		global sid_to_room
 		global redis_connection
-		
-		room_name = message['room'].strip()
+		global room_to_id
 		
 		user = get_user()
 
-		# TODO: Map Room IDs (NOT sids) with Room Names
-		if sid in sid_to_room:
-			if sid_to_room[sid] != room_name:
-				try:
-					room_id = create_room(user, content={
-						#'uuid': room_name,
-						'room_name': room_name,
-						'current_state': -1,
-					})
-
-					print(f"Created room with id = {room_id}")
-				except IntegrityError:
-					pass
+		room_name = message['room'].strip()
+		
+		if room_name in room_to_id:
+			room_id = room_to_id[room_name]
 		else:
 			room_id = create_room(user, content={
 				'room_name': room_name,
@@ -304,21 +310,19 @@ class TemplateNamespace(socketio.Namespace):
 			with self.session(sid) as session:
 				print(f"Updating DB for {session['room_id']}...")
 				# TODO: Update current state
-				obj = ChatRoom.objects.get(pk=session['room_id'])
-				serializer = ChatRoomSerializer(data={
-					'current_state': session['curr_state'],
-				}, instance=obj)
-				try:
-					if serializer.is_valid():
-						with transaction.atomic():
-							serializer.save()
-				except IntegrityError:
-					print('PK for ChatRoomMessage is already there in DB!')
-				update_session_db(session['room_name'])
+				with transaction.atomic():
+					# Update the current state in the database
+					obj = ChatRoom.objects.get(pk=session['room_id'])
+					obj.current_state = session['curr_state']
+					obj.save()
+					# Now finally, update the session
+					update_session_db(session['room_name'])
 			print('Done!')
+			# Added call to self.disconnect()
+			self.disconnect(sid)
+			print(f"Disconnected successfully.")
 		except KeyError:
 			pass
-		curr_session = None
 
 
 class AdminNamespace(socketio.Namespace):
