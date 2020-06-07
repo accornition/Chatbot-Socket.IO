@@ -14,6 +14,7 @@ import socketio
 from .chatbot import room_to_chatbot_user, ChatBotUser
 from .serializers import ChatBoxMessageSerializer
 from .models import ChatRoom
+from .events import HOST, PORT, PASSWORD
 from .events import background_handler, TemplateNamespace, AdminNamespace
 
 async_mode = None
@@ -26,14 +27,6 @@ num_users = 0
 
 # Maximum number of members in a group
 threshold = 4
-
-# The event object, which the background thread waits on. Update the DB when the event is set
-event = Event()
-
-# TODO: Cache the last N messages for instant display
-# The idea is to store it in the redis session, so that it loads the messages whenever the same
-# user comes to the same room
-last_N_messages = 4
 
 
 def index(request):
@@ -67,3 +60,8 @@ def get_user():
 # Register the namespaces
 sio.register_namespace(TemplateNamespace('/chat'))
 sio.register_namespace(AdminNamespace('/admin'))
+
+# Connect to a Redis Queue as an external process
+#external_sio = socketio.KombuManager(
+#    url=f"redis://{HOST}:{PORT}", redis_options={'password': PASSWORD}
+#    )

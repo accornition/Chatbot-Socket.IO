@@ -47,6 +47,8 @@ except UndefinedValueError:
 # The event object, which the background thread waits on. Update the DB when the event is set
 event = Event()
 
+# Store the last N messages for the recent history
+N = 5
 
 def get_user():
     """
@@ -65,19 +67,20 @@ def fetch_redis_batch(redis_iterable, batch_size):
     return zip_longest(*keys)
 
 
-def fetch_recent_history(room_name, recent_msg_id, history):
+def fetch_recent_history(room_name):
     """
-        Get last history msgs from redis)
-        from [recent_msg_id ... recent_msg_id - history]
+        Get last history msgs from redis
     """
     global REDIS_CONNECTION
-    msgs = None
+    msgs = []
 
     # TODO: Optimize this function
-    for key in REDIS_CONNECTION.scan_iter(f"{room_name}_history"):
+    for key in REDIS_CONNECTION.scan_iter(f"HISTORY_{room_name}_*"):
         if key is None:
             break
-        msgs = REDIS_CONNECTION.hgetall(key)
+        content = REDIS_CONNECTION.hgetall(key)
+        content = {key.decode('utf-8'): value.decode('utf-8') for key, value in content.items()}
+        msgs.append(content)
     return msgs
 
 
@@ -110,6 +113,9 @@ def update_session_redis(room_name, msg_number, content):
     """
     global REDIS_CONNECTION
     REDIS_CONNECTION.hmset(room_name + "_" + str(msg_number), content)
+    # Also update the history
+    # TODO: Store it as a single nested hash value
+    REDIS_CONNECTION.hmset(f"HISTORY_{room_name}_{msg_number % (N + 1)}", content)
 
 
 def update_session_db(room_name):
@@ -224,6 +230,7 @@ def get_msgcount(room_name):
     return int(num_msgs)
 
 
+
 class TemplateNamespace(socketio.Namespace):
     """
         The template chatbot routes go here
@@ -253,17 +260,14 @@ class TemplateNamespace(socketio.Namespace):
 
         if instance is not None:
             room_id = instance.uuid
-            num_msgs = instance.num_msgs
-            # Display the recent chat history
-            for msg in fetch_recent_history(room_name, num_msgs, history=5):
-                pass
+            # num_msgs = instance.num_msgs
         else:
             room_id = create_room(user, content={
                 'room_name': room_name,
                 'current_state': -1,
                 'num_msgs': 0,
             })
-            num_msgs = 0
+            # num_msgs = 0
 
             print(f"Created room with id = {room_id}")
 
@@ -273,6 +277,15 @@ class TemplateNamespace(socketio.Namespace):
         current_state = get_last_state_from_redis(room_name)
 
         chatbot_user = room_to_chatbot_user[room_name]
+
+        messages = fetch_recent_history(room_name)
+
+        if messages != []:
+            # Display the history
+            messages = sorted(messages, key=lambda d: d['msg_num'])
+            for msg in messages:
+                self.emit('message', {'data': msg['message'], 'user': msg['user_name']},
+                          room=room_name)
 
         with self.session(sid) as session:
             session['chatbot'] = ChatBotUser(
@@ -407,6 +420,7 @@ class TemplateNamespace(socketio.Namespace):
                 obj.save()
                 # Now finally, update the session
                 update_session_db(session['room_name'])
+
         print('Done!')
         print('Flushing contents of the redis session...')
         flush_session(session['room_name'], batch_size=10)
@@ -446,6 +460,17 @@ class AdminNamespace(socketio.Namespace):
                 session['room_name'] = room_name
                 session['room_id'] = instance.uuid
                 session['user'] = get_user()
+            
+            if session['user'] == 'admin':
+                # Fetch the recent history, if the user is admin
+                messages = fetch_recent_history(room_name)
+
+                if messages != []:
+                    # Display the history
+                    messages = sorted(messages, key=lambda d: d['msg_num'])
+                    for msg in messages:
+                        self.emit('message', {'data': msg['message'], 'user': msg['user_name']},
+                                room=room_name)
         else:
             print(f"Room {message['room']} not found in the Database. Disconnecting...")
             self.disconnect(sid)
