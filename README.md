@@ -1,5 +1,17 @@
 # ChatBot Demo
 
+************************
+
+## Tasks
+[  ] Optimize the Database Operations and try to make the queries better.
+[  ] For every room, possibly have a way to effectively cache recent history on Redis. Look up the `KombuManager` class under `socketio`. This would be better than naively querying the redis server directly.
+[  ] Create APIs for a model which stores the template JSON file into the database.
+[  ] Use celery to manage tasks across multiple clients.
+[  ] Refactor code so as to reuse code effectively.
+[  ] Store client related information and use it in the Chat room.
+
+*********************
+
 This is a sample bi-modal Chatbot, which handles inputs in two ways -
 * Using a template `JSON` file (here, for illustration, the template JSON files can be found at `chatbox/templates/chatbox/*.json`)
 * Using a live-chat based communication, between an actual administrator user and the end-user.
