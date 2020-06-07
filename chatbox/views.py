@@ -287,6 +287,9 @@ class TemplateNamespace(socketio.Namespace):
                 num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
                 if not error:
                     break
+                else:
+                    # Someone else has updated this first
+                    num_msgs += 1
             
             num_msgs = int(num_msgs)
 
@@ -317,6 +320,9 @@ class TemplateNamespace(socketio.Namespace):
                     num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
                     if not error:
                         break
+                    else:
+                        # Someone else has updated this first
+                        num_msgs += 1
                 with self.session(sid) as session:
                     session['num_msgs'] = num_msgs
                 self.on_disconnect(sid)
@@ -359,7 +365,9 @@ class TemplateNamespace(socketio.Namespace):
                         num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
                         if not error:
                             break
-                    
+                        else:
+                            # Someone else has updated this first
+                            num_msgs += 1                    
                     num_msgs = int(num_msgs)
                     print(f"num_msgs = {num_msgs}")
 
@@ -459,7 +467,9 @@ class AdminNamespace(socketio.Namespace):
                 num_msgs, error = atomic_get(f"curr_msg_{room_name}")
                 if not error:
                     break
-
+                else:
+                    # Someone else has updated this first
+                    num_msgs += 1
             num_msgs = int(num_msgs)
             
             # TODO: Make this a backgrounded task so that we can update the redis session immediately after
@@ -478,6 +488,9 @@ class AdminNamespace(socketio.Namespace):
                 num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
                 if not error:
                     break
+                else:
+                    # Someone else has updated this first
+                    num_msgs += 1
 
     def on_disconnect(self, sid):
         print(f"Disconnecting from Namespace")
