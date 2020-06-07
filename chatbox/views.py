@@ -255,7 +255,12 @@ class TemplateNamespace(socketio.Namespace):
             session['curr_state'] = current_state
             session['room_name'] = room_name
             session['room_id'] = room_id
-            session['num_msgs'] = num_msgs
+            while True:
+                num_msgs, error = atomic_get(f"curr_msg_{room_name}")
+                if not error:
+                    break
+            session['num_msgs'] = int(num_msgs)
+
 
 
     def on_exit_room(self, sid, message):
@@ -274,7 +279,13 @@ class TemplateNamespace(socketio.Namespace):
 
         with self.session(sid) as session:
             room_id = session['room_id']
-            num_msgs = session['num_msgs']
+            # num_msgs = session['num_msgs']
+            while True:
+                num_msgs, error = atomic_get(f"curr_msg_{room_name}")
+                if not error:
+                    break
+            num_msgs = int(num_msgs)
+
 
         if room_name is None:
             self.emit('message', {'data': message['data']}, room=sid)
@@ -381,6 +392,15 @@ class TemplateNamespace(socketio.Namespace):
                         #'room_id': str(room_name),
                     })
                     num_msgs += 1
+                    while True:
+                        # Set the current message atomically
+                        num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
+                        if not error:
+                            break
+                        else:
+                            # Someone else has updated this first
+                            num_msgs += 1                    
+                    num_msgs = int(num_msgs)
                     session['num_msgs'] = num_msgs
                 else:
                     pass
@@ -467,9 +487,6 @@ class AdminNamespace(socketio.Namespace):
                 num_msgs, error = atomic_get(f"curr_msg_{room_name}")
                 if not error:
                     break
-                else:
-                    # Someone else has updated this first
-                    num_msgs += 1
             num_msgs = int(num_msgs)
             
             # TODO: Make this a backgrounded task so that we can update the redis session immediately after
