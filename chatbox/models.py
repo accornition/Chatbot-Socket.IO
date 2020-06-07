@@ -10,6 +10,7 @@ class ChatRoom(models.Model):
     created_on = models.DateTimeField(_('chatroom created on'), auto_now_add=True)
     room_name = models.CharField(max_length=1000, null=True)
     current_state = models.IntegerField(default=1, db_column='current_state')
+    num_msgs = models.PositiveIntegerField(default=0, db_column='num_msgs')
 
 class ChatboxMessage(models.Model):
     # TODO: Maintain a reference to the User model and get user information

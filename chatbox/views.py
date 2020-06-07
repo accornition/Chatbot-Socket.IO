@@ -7,7 +7,7 @@ from django.shortcuts import render
 from django.db import transaction, IntegrityError
 
 from decouple import Config, RepositoryEnv, UndefinedValueError
-from redis import StrictRedis
+from redis import StrictRedis, WatchError
 
 import socketio
 
@@ -28,9 +28,6 @@ num_users = 0
 threshold = 4
 
 ROOM_TO_ID = dict()
-
-# TODO: Current Message Number. Must be read from somewhere in the future
-msg_num = 0
 
 # The event object, which the background thread waits on. Update the DB when the event is set
 event = Event()
@@ -64,25 +61,41 @@ except UndefinedValueError:
     CHATBOX_DEMO_APPLICATION = False
 
 
-def get_room_mapping():
-    # Fetches the room_id -> room_name mapping from the Database
-    global ROOM_TO_ID
-    # TODO: Avoid this stupid bulk query
-    for obj in ChatRoom.objects.all():
-        room_id, room_name = obj.uuid, obj.room_name
-        ROOM_TO_ID[room_name] = room_id
-    print(f"After bulk query, mapping = {ROOM_TO_ID}")
-
-
 def fetch_redis_batch(redis_iterable, batch_size):
     # Fetch all the keys and values in a batch
     keys = [iter(redis_iterable)] * batch_size
     return zip_longest(*keys)
 
 
+def fetch_recent_history(room_name, recent_msg_id, num_msgs):
+    # Get last N msgs from the database (or redis)
+    # from [recent_msg_id ... recent_msg_id - num_msgs]
+    global redis_connection
+    msgs = []
+    for key_batch in fetch_redis_batch(
+        redis_connection.scan_iter(f"{room_name}_"), min(500, num_msgs)
+    ):
+        for key in key_batch:
+            if key is None:
+                break
+    return msgs
+
+
 def get_last_state_from_redis(room_name):
     # TODO: Retrieve the last state stored in the DB
     return 1
+
+
+def flush_session(room_name, batch_size):
+    # Flush the contents of the redis cache for this session
+    global redis_connection
+    for key_batch in fetch_redis_batch(
+        redis_connection.scan_iter(f"{room_name}_*"), batch_size
+    ):
+        for key in key_batch:
+            if key is None:
+                break
+            redis_connection.delete(key)
 
 
 # Updates the database with the session data, from the stored cache in redis
@@ -154,6 +167,30 @@ def update_session_redis(room_name, msg_number, content):
     redis_connection.hmset(room_name + "_" + str(msg_number), content)
 
 
+def atomic_get_set(key, value):
+    global redis_connection
+    with redis_connection.pipeline() as pipe:
+        try:
+            pipe.watch(key)
+            pipe.multi()
+            pipe.set(key, value)
+            pipe.get(key)
+            return pipe.execute()[-1], False
+        except WatchError:
+            return pipe.get(key), True
+
+def atomic_get(key):
+    global redis_connection
+    with redis_connection.pipeline() as pipe:
+        try:
+            pipe.watch(key)
+            pipe.multi()
+            pipe.get(key)
+            return pipe.execute()[-1], False
+        except WatchError:
+            return pipe.get(key), True
+
+
 def create_room(user, content):
     print(f"Creating room for user {user}")
     #serializer = ChatRoomSerializer(data=content)
@@ -172,27 +209,35 @@ class TemplateNamespace(socketio.Namespace):
         The template chatbot routes go here
     """
     def on_connect(self, sid, environ):
-        global ROOM_TO_ID
-        get_room_mapping()
-        print(f"ROOM_TO_ID = {ROOM_TO_ID}")
         print(f"Connected to Namespace template!")
 
 
     def on_enter_room(self, sid, message):
         global redis_connection
-        global ROOM_TO_ID
 
         user = get_user()
 
         room_name = message['room'].strip()
 
-        if room_name in ROOM_TO_ID:
-            room_id = ROOM_TO_ID[room_name]
+        with transaction.atomic():
+            try:
+                instance = ChatRoom.objects.get(room_name=room_name)
+            except ChatRoom.DoesNotExist:
+                instance = None
+
+        if instance is not None:
+            room_id = instance.uuid
+            num_msgs = instance.num_msgs
+            # Display the recent chat history
+            #for msg in fetch_recent_history(num_msgs=last_N_messages):
+            #    pass
         else:
             room_id = create_room(user, content={
                 'room_name': room_name,
                 'current_state': -1,
+                'num_msgs': 0,
             })
+            num_msgs = 0
 
             print(f"Created room with id = {room_id}")
 
@@ -210,10 +255,10 @@ class TemplateNamespace(socketio.Namespace):
             session['curr_state'] = current_state
             session['room_name'] = room_name
             session['room_id'] = room_id
+            session['num_msgs'] = num_msgs
 
 
     def on_exit_room(self, sid, message):
-        global ROOM_TO_ID
         room_name = message['data'].strip()
         with self.session(sid) as session:
             room_name = None if session['room_name'] != room_name else room_name
@@ -223,13 +268,13 @@ class TemplateNamespace(socketio.Namespace):
 
 
     def on_message(self, sid, message):
-        global msg_num
         room_name = message['room']
 
         print(f"Sending {message}")
 
         with self.session(sid) as session:
             room_id = session['room_id']
+            num_msgs = session['num_msgs']
 
         if room_name is None:
             self.emit('message', {'data': message['data']}, room=sid)
@@ -237,18 +282,28 @@ class TemplateNamespace(socketio.Namespace):
             user = get_user()
             msg_content = message['data']
 
+            while True:
+                # Set the current message atomically
+                num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
+                if not error:
+                    break
+            
+            num_msgs = int(num_msgs)
+
             # TODO: Make this a background task
-            update_session_redis(room_name, msg_num + 1, {
+            update_session_redis(room_name, num_msgs + 1, {
                 'chat_room': room_name,
                 'user_name': str(user),
                 'message': msg_content,
-                'msg_num': msg_num + 1,
+                'msg_num': num_msgs + 1,
                 'room_id': str(room_id),
                 #'room_id': str(room_name),
             })
-            msg_num += 1
+            num_msgs += 1
 
-            if CHATBOX_DEMO_APPLICATION == True:
+
+
+            if CHATBOX_DEMO_APPLICATION:
                 self.emit('message', {'data': msg_content}, room=room_name)
 
 
@@ -258,7 +313,13 @@ class TemplateNamespace(socketio.Namespace):
             if msg_content == 'admin':
                 # Go to admin livechat
                 self.emit('livechat', {'data': f"Redirecting to admin chat...."}, room=room_name)
-                self.disconnect(sid)
+                while True:
+                    num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
+                    if not error:
+                        break
+                with self.session(sid) as session:
+                    session['num_msgs'] = num_msgs
+                self.on_disconnect(sid)
 
             with self.session(sid) as session:
                 if session['curr_state'] != -1:
@@ -275,7 +336,7 @@ class TemplateNamespace(socketio.Namespace):
                         curr_state = reply[1]
                         reply = reply[0]
 
-                    if msg_type == None:
+                    if msg_type is None:
                         msg_type = 'None'
 
                     # Sending the reply
@@ -293,16 +354,26 @@ class TemplateNamespace(socketio.Namespace):
 
                     session['curr_state'] = curr_state
 
+                    while True:
+                        # Set the current message atomically
+                        num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
+                        if not error:
+                            break
+                    
+                    num_msgs = int(num_msgs)
+                    print(f"num_msgs = {num_msgs}")
+
                     # TODO: Make this a background task
-                    update_session_redis(room_name, msg_num + 1, {
+                    update_session_redis(room_name, num_msgs + 1, {
                         'chat_room': room_name,
                         'user_name': room_to_chatbot_user[room_name],
                         'message': reply,
-                        'msg_num': msg_num + 1,
+                        'msg_num': num_msgs + 1,
                         'room_id': str(room_id),
                         #'room_id': str(room_name),
                     })
-                    msg_num += 1
+                    num_msgs += 1
+                    session['num_msgs'] = num_msgs
                 else:
                     pass
 
@@ -316,9 +387,13 @@ class TemplateNamespace(socketio.Namespace):
                 # Update the current state in the database
                 obj = ChatRoom.objects.get(pk=session['room_id'])
                 obj.current_state = session['curr_state']
+                obj.num_msgs = session['num_msgs']
                 obj.save()
                 # Now finally, update the session
                 update_session_db(session['room_name'])
+        print('Done!')
+        print('Flushing contents of the redis session...')
+        flush_session(session['room_name'], batch_size=10)
         print('Done!')
         # Added call to self.disconnect()
         self.disconnect(sid)
@@ -330,23 +405,24 @@ class AdminNamespace(socketio.Namespace):
         The Admin LiveChat routes go here
     """
     def on_connect(self, sid, environ):
-        global ROOM_TO_ID
-        get_room_mapping()
-        print(f"ROOM_TO_ID = {ROOM_TO_ID}")
         print(f"Connected to Namespace admin!")
 
 
     def on_enter_room(self, sid, message):
-        global ROOM_TO_ID
         room_name = message['room'].strip()
-        room_name = None if room_name not in ROOM_TO_ID else room_name
-        if room_name is not None:
+        with transaction.atomic():
+            try:
+                instance = ChatRoom.objects.get(room_name=room_name)
+            except ChatRoom.DoesNotExist:
+                instance = None
+
+        if instance is not None:
             print(f"Entered room {room_name}")
             self.enter_room(sid, room=room_name)
 
             with self.session(sid) as session:
                 session['room_name'] = room_name
-                session['room_id'] = ROOM_TO_ID[room_name]
+                session['room_id'] = instance.uuid
                 session['user'] = get_user()
         else:
             print(f"Room {message['room']} not found in the Database. Disconnecting...")
@@ -354,9 +430,10 @@ class AdminNamespace(socketio.Namespace):
 
 
     def on_exit_room(self, sid, message):
-        global ROOM_TO_ID
         room_name = message['data'].strip()
-        room_id = None if room_name not in ROOM_TO_ID else ROOM_TO_ID[room_name]
+        
+        with self.session(sid) as session:
+            room_id = session['room_id']
         if room_id is not None:
             self.leave_room(sid, room=room_name)
             print(f"Exited room {room_name}")
@@ -366,30 +443,41 @@ class AdminNamespace(socketio.Namespace):
 
 
     def on_message(self, sid, message):
-        global ROOM_TO_ID
-        global msg_num
-
         room_name = message['room']
 
         print(f"Sending {message}")
-        if room_name not in ROOM_TO_ID:
-            self.emit('message', {'data': message['data']}, room=sid)
-        else:
-            print(f"Emitting to room {room_name}")
-            self.emit('message', {'data': message['data']}, room=room_name)
+        print(f"Emitting to room {room_name}")
+        self.emit('message', {'data': message['data']}, room=room_name)
 
-            msg_content = message['data']
+        msg_content = message['data']
 
-            with self.session(sid) as session:
-                room_id = session['room_id']
-                update_session_redis(room_name, msg_num + 1, {
-                    'chat_room': room_name,
-                    'user_name': str(session['user']),
-                    'message': msg_content,
-                    'msg_num': msg_num + 1,
-                    'room_id': str(room_id),
-                })
-                msg_num += 1
+        with self.session(sid) as session:
+            room_id = session['room_id']
+            
+            while True:
+                # Get the current message atomically
+                num_msgs, error = atomic_get(f"curr_msg_{room_name}")
+                if not error:
+                    break
+
+            num_msgs = int(num_msgs)
+            
+            # TODO: Make this a backgrounded task so that we can update the redis session immediately after
+            # we send a message
+            update_session_redis(room_name, num_msgs + 1, {
+                'chat_room': room_name,
+                'user_name': str(session['user']),
+                'message': msg_content,
+                'msg_num': num_msgs + 1,
+                'room_id': str(room_id),
+            })
+            num_msgs += 1
+            
+            while True:
+                # Set the current message atomically
+                num_msgs, error = atomic_get_set(f"curr_msg_{room_name}", num_msgs)
+                if not error:
+                    break
 
     def on_disconnect(self, sid):
         print(f"Disconnecting from Namespace")
@@ -397,13 +485,19 @@ class AdminNamespace(socketio.Namespace):
         try:
             with self.session(sid) as session:
                 print(f"Updating DB for {session['room_id']}...")
-                # TODO: Update current state
+                obj = ChatRoom.objects.get(pk=session['room_id'])
+                while True:
+                    obj.num_msgs, error = atomic_get(f"curr_msg_{session['room_name']}")
+                    if not error:
+                        break
                 with transaction.atomic():
                     # Update the current state in the database
-                    obj = ChatRoom.objects.get(pk=session['room_id'])
                     obj.save()
                     # Now finally, update the session
                     update_session_db(session['room_name'])
+            print('Done!')
+            print('Flushing contents of the redis session...')
+            flush_session(session['room_name'], batch_size=10)
             print('Done!')
             # Added call to self.disconnect()
             self.disconnect(sid)
