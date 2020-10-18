@@ -126,4 +126,5 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
 try:
     from .local_settings import *
 except ImportError:
-    raise ValueError('local_settings.py not found')
+    pass
+    #raise ValueError('local_settings.py not found')
