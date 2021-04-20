@@ -11,7 +11,7 @@ asgiref==3.2.7
 astroid==2.4.1
 async-timeout==3.0.1
 attrs==19.3.0
-autobahn==20.4.3
+autobahn==20.12.3
 Automat==20.2.0
 cffi==1.14.0
 channels==2.4.0
